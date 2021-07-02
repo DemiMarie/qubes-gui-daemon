@@ -68,6 +68,7 @@
 #include "shm-args.h"
 #include "util.h"
 #include "xen_ioctl.h"
+#include <xen/gntdev.h>
 
 /* Supported protocol version */
 
@@ -566,6 +567,11 @@ static void mkghandles(Ghandles * g)
     }
     g->clipboard_requested = 0;
     g->clipboard_xevent_time = 0;
+    g->xgt = xengnttab_open(NULL, 0);
+    if (!g->xgt) {
+        perror("xengnttab_open");
+        exit(1);
+    }
     if ((g->gntdev_fd = open("/dev/xen/gntdev", O_RDWR|O_CLOEXEC|O_NOCTTY)) < 0) {
         perror("open /dev/xen/gntdev");
         exit(1);
@@ -2910,11 +2916,11 @@ out_free_shm_args:
     free(shm_args);
 }
 
-static uint32_t handle_window_dump_body_grant_refs(Ghandles *g,
-                                    size_t untrusted_wd_body_len,
-                                    uint32_t *grants,
-                                    size_t *img_data_size) {
+static void handle_window_dump_body_grant_refs(Ghandles *g,
+         size_t untrusted_wd_body_len, size_t *img_data_size, struct
+         shm_args_hdr **shm_args, size_t *shm_args_len) {
     size_t refs_len;
+    struct shm_args_grant_refs *shm_args_grant;
 
     // We don't have any custom arguments except the variable length refs list.
     _Static_assert(sizeof(struct msg_window_dump_grant_refs) == 0,
@@ -2933,30 +2939,32 @@ static uint32_t handle_window_dump_body_grant_refs(Ghandles *g,
         exit(1);
     }
     refs_len = untrusted_wd_body_len;
-    *grants = refs_len / SIZEOF_GRANT_REF;
-    *img_data_size = *grants * 4096;
-    uint32_t *refs = malloc(refs_len);
-    if (refs == NULL) {
+
+    *shm_args_len = sizeof(struct shm_args_hdr) +
+                    sizeof(struct shm_args_grant_refs) +
+                    refs_len;
+    *shm_args = calloc(1, *shm_args_len);
+    if (*shm_args == NULL) {
         perror("malloc failed");
         exit(1);
     }
-    uint32_t dma_buf;
-    read_data(g->vchan, (char *)refs, refs_len);
-    if (!map_grant_references(g->gntdev_fd, g->domid, *grants, refs, &dma_buf))
-        exit(1);
-    free(refs);
-    return dma_buf;
+    shm_args_grant = (struct shm_args_grant_refs *) (
+            ((uint8_t *) *shm_args) + sizeof(struct shm_args_hdr));
+    (*shm_args)->type = SHM_ARGS_TYPE_GRANT_REFS;
+    shm_args_grant->count = refs_len / SIZEOF_GRANT_REF;
+    *img_data_size = shm_args_grant->count * 4096;
+
+    read_data(g->vchan, (char *) &shm_args_grant->refs[0], refs_len);
 }
 
-static uint32_t handle_window_dump_body(Ghandles *g,
-                                        uint32_t wd_type,
-                                        size_t untrusted_wd_body_len,
-                                        uint32_t *grants,
-                                        size_t *img_data_size) {
+static void handle_window_dump_body(Ghandles *g, uint32_t wd_type, size_t
+        untrusted_wd_body_len, size_t *img_data_size, struct shm_args_hdr
+        **shm_args, size_t *shm_args_len) {
     switch (wd_type) {
         case WINDOW_DUMP_TYPE_GRANT_REFS:
-            return handle_window_dump_body_grant_refs(
-                    g, untrusted_wd_body_len, grants, img_data_size);
+            handle_window_dump_body_grant_refs(g, untrusted_wd_body_len,
+                    img_data_size, shm_args, shm_args_len);
+            break;
         default:
             // not reachable
             assert(false);
@@ -2967,7 +2975,8 @@ static uint32_t handle_window_dump_body(Ghandles *g,
 static void handle_window_dump(Ghandles *g, struct windowdata *vm_window,
                                uint32_t untrusted_len) {
     struct msg_window_dump_hdr untrusted_wd_hdr;
-    size_t untrusted_wd_body_len, img_data_size;
+    size_t untrusted_wd_body_len = 0, img_data_size = 0, shm_args_len = 0;
+    struct shm_args_hdr *shm_args = NULL;
 
     release_mapped_mfns(g, vm_window);
 
@@ -3000,12 +3009,8 @@ static void handle_window_dump(Ghandles *g, struct windowdata *vm_window,
 
     vm_window->shmid = -1;
 
-    uint32_t grants;
-    vm_window->dma_buf = handle_window_dump_body(g,
-                            wd_type,
-                            untrusted_wd_body_len,
-                            &grants,
-                            &img_data_size);
+    handle_window_dump_body(g, wd_type, untrusted_wd_body_len, &img_data_size,
+                            &shm_args, &shm_args_len);
 
     if (g->invisible)
         return;
@@ -3021,6 +3026,19 @@ static void handle_window_dump(Ghandles *g, struct windowdata *vm_window,
     }
 
     vm_window->shmseg = xcb_generate_id(g->cb_connection);
+    shm_args->shmid = vm_window->shmid;
+    struct shm_args_grant_refs *shm_args_grant = (struct shm_args_grant_refs *) (
+            ((uint8_t *) shm_args) + sizeof(struct shm_args_hdr));
+
+    if (xengnttab_dmabuf_exp_from_refs(g->xgt,
+                g->domid, 0,
+                shm_args_grant->count,
+                &shm_args_grant->refs[0],
+                &vm_window->dma_buf)) {
+        fputs("Cannot map grants\n", stderr);
+        exit(1);
+    }
+
     // Create an X shared memory segment
     int newfd = fcntl(vm_window->dma_buf, F_DUPFD_CLOEXEC, 3);
     if (newfd < 0)
@@ -3029,26 +3047,26 @@ static void handle_window_dump(Ghandles *g, struct windowdata *vm_window,
         xcb_shm_attach_fd_checked(g->cb_connection, vm_window->shmseg,
             newfd, true),
         "xcb_shm_attach_fd_checked");
-    xcb_generic_error_t *error = xcb_request_check(g->cb_connection, cookie);
-    if (error) {
-        fprintf(stderr,
-            "xcb_shm_attach_fd_checked failed for window 0x%lx(remote 0x%lx) fd %d\n",
-            vm_window->local_winid,
-            vm_window->remote_winid,
-            g->gntdev_fd);
-        vm_window->shmid = INVALID_SHM_ID;
-        XErrorEvent err = {
-           .type = error->response_type,
-           .display = g->display,
-           .error_code = error->error_code,
-           .resourceid = error->resource_id,
-           .serial = error->full_sequence,
-           .request_code = error->major_code,
-           .minor_code = error->minor_code,
-        };
-        free(error);
-        dummy_handler(g->display, &err);
-    }
+     xcb_generic_error_t *error = xcb_request_check(g->cb_connection, cookie);
+     if (error) {
+         fprintf(stderr,
+                 "xcb_shm_attach_fd_checked failed for window 0x%lx(remote 0x%lx) fd %d\n",
+                 vm_window->local_winid,
+                 vm_window->remote_winid,
+                 g->gntdev_fd);
+         vm_window->shmid = INVALID_SHM_ID;
+         XErrorEvent err = {
+             .type = error->response_type,
+             .display = g->display,
+             .error_code = error->error_code,
+             .resourceid = error->resource_id,
+             .serial = error->full_sequence,
+             .request_code = error->major_code,
+             .minor_code = error->minor_code,
+         };
+         free(error);
+         dummy_handler(g->display, &err);
+     }
 }
 
 /* VM message dispatcher */

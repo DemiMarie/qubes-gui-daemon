@@ -86,6 +86,8 @@
 #include <xcb/xcb.h>
 #include <xcb/xproto.h>
 #include <xcb/shm.h>
+#include <xen/xen.h>
+#include <xengnttab.h>
 #include "util.h"
 
 #define QUBES_POLICY_EVAL_SIMPLE_SOCKET ("/etc/qubes-rpc/" QUBES_SERVICE_EVAL_SIMPLE)
@@ -235,6 +237,7 @@ struct _global_handles {
     Atom qubes_label, qubes_label_color, qubes_vmname, qubes_vmwindowid, net_wm_icon;
     bool in_dom0; /* true if we are in dom0, otherwise false */
     int gntdev_fd; /**< File descriptor to `/dev/xen/gntdev` */
+    xengnttab_handle *xgt; /**< Xen grant table handle */
 };
 
 typedef struct _global_handles Ghandles;

@@ -27,7 +27,7 @@ objs := xside.o png.o trayicon.o ../gui-common/double-buffer.o ../gui-common/txr
 	../gui-common/error.o list.o xen_ioctl.o
 extra_cflags := -I../include/ -g -O2 -Wall -Wextra -Werror -pie -fPIC \
 		$(shell pkg-config --cflags $(pkgs))
-LDLIBS := $(shell pkg-config --libs $(pkgs))
+LDLIBS := $(shell pkg-config --libs $(pkgs)) -lxenctrl -lxengnttab
 all: qubes-guid # qubes-guid.1
 vpath %.c ../common
 qubes-guid: $(objs)
