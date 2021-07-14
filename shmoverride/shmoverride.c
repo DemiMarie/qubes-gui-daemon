@@ -50,11 +50,32 @@
 #include "shm-args.h"
 #include <qubes-gui-protocol.h>
 
+#define QUBES_STRINGIFY(x) QUBES_STRINGIFY_(x)
+#define QUBES_STRINGIFY_(x) #x
+
+#ifdef _STAT_VER
+# define FSTAT __fxstat
+# define FSTAT64 __fxstat64
+# define VER_ARG int ver,
+# define VER ver,
+#else
+# define FSTAT fstat
+# define FSTAT64 fstat64
+# define VER_ARG
+# define VER
+#endif
+
+#define ASM_DEF(ret, name, ...) \
+    __attribute__((visibility("default"))) \
+    ret name(__VA_ARGS__) __asm__(QUBES_STRINGIFY_(name)); \
+    __attribute__((visibility("default"))) \
+    ret name(__VA_ARGS__)
+
 static void *(*real_mmap)(void *shmaddr, size_t len, int prot, int flags,
            int fd, off_t offset);
 static int (*real_munmap) (void *shmaddr, size_t len);
-static int (*real_fstat64) (int ver, int fd, struct stat64 *buf);
-static int (*real_fstat)(int ver, int fd, struct stat *buf);
+static int (*real_fstat64) (VER_ARG int fd, struct stat64 *buf);
+static int (*real_fstat)(VER_ARG int fd, struct stat *buf);
 
 static struct stat global_buf;
 
@@ -67,7 +88,6 @@ static xc_interface *xc_hnd;
 static int xc_hnd;
 #endif
 static xengnttab_handle *xgt;
-static int list_len;
 static char __shmid_filename[SHMID_FILENAME_LEN];
 static char *shmid_filename = NULL;
 static int idfd = -1;
@@ -173,8 +193,10 @@ static void *qubes_mmap64(void *shmaddr, size_t len, int prot, int flags,
     uint8_t *fakeaddr = NULL;
     struct info *info = NULL;
     struct stat64 buf;
+#ifdef _STAT_VER
     void *i __attribute__((unused)) = __fxstat;
     void *j __attribute__((unused)) = __fxstat64;
+#endif
 
 #if defined MAP_ANON && defined MAP_ANONYMOUS && (MAP_ANONYMOUS) != (MAP_ANON)
 # error header bug (def mismatch)
@@ -188,7 +210,11 @@ static void *qubes_mmap64(void *shmaddr, size_t len, int prot, int flags,
     if ((flags & (MAP_ANON|MAP_ANONYMOUS)) || in_shmoverride)
         return real_mmap(shmaddr, len, prot, flags, fd, offset);
 
-    if (real_fstat64(_STAT_VER, fd, &buf))
+    if (real_fstat64(
+#ifdef _STAT_VER
+                _STAT_VER,
+#endif
+                fd, &buf))
         return MAP_FAILED;
 
     if (buf.st_dev != global_buf.st_dev ||
@@ -231,7 +257,6 @@ static void *qubes_mmap64(void *shmaddr, size_t len, int prot, int flags,
         saved_errno = errno;
         list_insert(addr_list, (long) fakeaddr, info);
         info = NULL; // so it will not be freed below
-        list_len++;
     } else {
         saved_errno = errno;
         fakeaddr = MAP_FAILED;
@@ -248,19 +273,16 @@ fail_einval:
     goto fail;
 }
 
-__attribute__((visibility("default")))
-void *mmap64(void *shmaddr, size_t len, int prot, int flags,
-             int fd, off_t offset)
+ASM_DEF(void *, mmap64,
+        void *shmaddr, size_t len, int prot, int flags,
+        int fd, off_t offset)
 {
     return qubes_mmap64(shmaddr, len, prot, flags, fd, offset);
 }
 
-__attribute__((visibility("default")))
-void *mmap(void *shmaddr, size_t len, int prot, int flags,
-           int fd, off_t offset) __asm__("mmap");
-__attribute__((visibility("default")))
-void *mmap(void *shmaddr, size_t len, int prot, int flags,
-           int fd, off_t offset)
+ASM_DEF(void *, mmap,
+        void *shmaddr, size_t len, int prot, int flags,
+        int fd, off_t offset)
 {
     return qubes_mmap64(shmaddr, len, prot, flags, fd, offset);
 }
@@ -303,7 +325,6 @@ __attribute__((visibility("default"))) int munmap(void *addr, size_t len)
     }
 
     list_remove(item);
-    list_len--;
 
     in_shmoverride = false;
     pthread_mutex_unlock(&global_mutex);
@@ -370,16 +391,17 @@ int get_display(void)
     return 0;
 }
 
-__attribute__((visibility("default")))
-int __fxstat64(int ver, int filedes, struct stat64 *buf)
+ASM_DEF(int, FSTAT64, VER_ARG int filedes, struct stat64 *buf)
 {
+#ifdef _STAT_VER
     if (ver != _STAT_VER) {
         fprintf(stderr,
                 "Wrong _STAT_VER: got %d, expected %d, libc has incompatibly changed\n",
                 ver, _STAT_VER);
         abort();
     }
-    int res = real_fstat64(ver, filedes, buf);
+#endif
+    int res = real_fstat64(VER filedes, buf);
     if (res ||
         buf->st_dev != global_buf.st_dev ||
         buf->st_ino != global_buf.st_ino ||
@@ -398,17 +420,16 @@ int __fxstat64(int ver, int filedes, struct stat64 *buf)
     }
 }
 
-__attribute__((visibility("default")))
-int __fxstat(int ver, int filedes, struct stat *buf) __asm__("__fxstat");
-__attribute__((visibility("default")))
-int __fxstat(int ver, int filedes, struct stat *buf) {
+ASM_DEF(int, FSTAT, VER_ARG int filedes, struct stat *buf) {
+#ifdef _STAT_VER
     if (ver != _STAT_VER) {
         fprintf(stderr,
                 "Wrong _STAT_VER: got %d, expected %d, libc has incompatibly changed\n",
                 ver, _STAT_VER);
         abort();
     }
-    int res = real_fstat(ver, filedes, buf);
+#endif
+    int res = real_fstat(VER filedes, buf);
     if (res ||
         buf->st_dev != global_buf.st_dev ||
         buf->st_ino != global_buf.st_ino ||
@@ -437,11 +458,11 @@ int __attribute__ ((constructor)) initfunc(void)
     if (!(real_mmap = dlsym(RTLD_NEXT, "mmap64"))) {
         fprintf(stderr, "shmoverride: no mmap?: %s", dlerror());
         abort();
-    } else if (!(real_fstat = dlsym(RTLD_NEXT, "__fxstat"))) {
-        fprintf(stderr, "shmoverride: no __fxstat?: %s", dlerror());
+    } else if (!(real_fstat = dlsym(RTLD_NEXT, QUBES_STRINGIFY(FSTAT)))) {
+        fprintf(stderr, "shmoverride: no " QUBES_STRINGIFY(FSTAT) "?: %s", dlerror());
         abort();
-    } else if (!(real_fstat64 = dlsym(RTLD_NEXT, "__fxstat64"))) {
-        fprintf(stderr, "shmoverride: no __fxstat64?: %s", dlerror());
+    } else if (!(real_fstat64 = dlsym(RTLD_NEXT, QUBES_STRINGIFY(FSTAT64)))) {
+        fprintf(stderr, "shmoverride: no " QUBES_STRINGIFY(FSTAT64) "?: %s", dlerror());
         abort();
     } else if (!(real_munmap = dlsym(RTLD_NEXT, "munmap"))) {
         fprintf(stderr, "shmoverride: no munmap?: %s", dlerror());
