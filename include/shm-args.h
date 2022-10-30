@@ -51,6 +51,7 @@ struct shm_args_mfns {
 
 struct shm_args_grant_refs {
     uint32_t count;
+    uint32_t _pad;
     uint64_t off;
     uint32_t refs[];
 };

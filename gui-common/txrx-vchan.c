@@ -25,6 +25,7 @@
 #include <libvchan.h>
 #include <errno.h>
 #include <poll.h>
+#include <limits.h>
 #include <assert.h>
 
 #include <double-buffer.h>
@@ -55,7 +56,7 @@ static void handle_vchan_error(libvchan_t *vchan, const char *op)
     }
 }
 
-static int write_data_exact(libvchan_t *vchan, char *buf, int size)
+static void write_data_exact(libvchan_t *vchan, char *buf, int size)
 {
     int written = 0;
     int ret;
@@ -67,10 +68,9 @@ static int write_data_exact(libvchan_t *vchan, char *buf, int size)
         written += ret;
     }
 //      fprintf(stderr, "sent %d bytes\n", size);
-    return size;
 }
 
-int write_data(libvchan_t *vchan, char *buf, int size)
+void write_data(libvchan_t *vchan, void *buf, size_t size)
 {
     int count;
     if (!double_buffered)
@@ -83,27 +83,28 @@ int write_data(libvchan_t *vchan, char *buf, int size)
         // blocking; remainder of data stays in the double buffer
     write_data_exact(vchan, double_buffer_data(), count);
     double_buffer_substract(count);
-    return size;
 }
 
-int real_write_message(libvchan_t *vchan, char *hdr, int size, char *data, int datasize)
+void real_write_message(libvchan_t *vchan, char *hdr, size_t size, char *data, size_t datasize)
 {
     write_data(vchan, hdr, size);
     write_data(vchan, data, datasize);
-    return 0;
 }
 
-int read_data(libvchan_t *vchan, char *buf, int size)
+size_t read_data(libvchan_t *vchan, char *buf, size_t size)
 {
-    int written = 0;
+    size_t read = 0;
     int ret;
-    while (written < size) {
+    while (read < size) {
+        size_t to_read = size - read;
+        if (to_read > INT_MAX / 2)
+            to_read = INT_MAX / 2;
         while (!libvchan_data_ready(vchan))
             wait_for_vchan_or_argfd_once(vchan, -1);
-        ret = libvchan_read(vchan, buf + written, size - written);
+        ret = libvchan_read(vchan, buf + read, (int)to_read);
         if (ret <= 0)
             handle_vchan_error(vchan, "read data");
-        written += ret;
+        read += (size_t)ret;
     }
 //      fprintf(stderr, "read %d bytes\n", size);
     return size;

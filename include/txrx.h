@@ -24,9 +24,9 @@
 
 #include <libvchan.h>
 
-int write_data(libvchan_t *vchan, char *buf, int size);
-int real_write_message(libvchan_t *vchan, char *hdr, int size, char *data, int datasize);
-int read_data(libvchan_t *vchan, char *buf, int size);
+void write_data(libvchan_t *vchan, void *buf, size_t size);
+void real_write_message(libvchan_t *vchan, char *hdr, size_t size, char *data, size_t datasize);
+size_t read_data(libvchan_t *vchan, char *buf, size_t size);
 #define read_struct(vchan, x) read_data(vchan, (char*)&x, sizeof(x))
 #define write_struct(vchan, x) write_data(vchan, (char*)&x, sizeof(x))
 #define write_message(vchan,x,y) do {\
