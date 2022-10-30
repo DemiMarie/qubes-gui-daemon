@@ -1952,14 +1952,16 @@ static void process_xevent_focus(Ghandles * g, const XFocusChangeEvent * ev)
  * also do not let to cover forced colorful frame (for undecoraded windows)
  */
 static void do_shm_update(Ghandles * g, struct windowdata *vm_window,
-           int untrusted_x, int untrusted_y, int untrusted_w,
-           int untrusted_h)
+           int32_t untrusted_x, int32_t untrusted_y,
+           int32_t untrusted_w, int32_t untrusted_h)
 {
     int border_width = BORDER_WIDTH;
     int border_padding = 0; /* start forced border x pixels from the edge */
-    int x = 0, y = 0, w = 0, h = 0;
+    int32_t x = 0, y = 0, w = 0, h = 0;
     ASSERT_WIDTH_UNSIGNED(vm_window->width);
     ASSERT_HEIGHT_UNSIGNED(vm_window->height);
+    int32_t const vm_window_width = (int32_t)vm_window->width;
+    int32_t const vm_window_height = (int32_t)vm_window->height;
 
     /* sanitize start */
     if (untrusted_x < 0 || untrusted_y < 0 || untrusted_w < 0 || untrusted_h < 0) {
@@ -2027,12 +2029,12 @@ static void do_shm_update(Ghandles * g, struct windowdata *vm_window,
         // now: untrusted_y + vm_window->y is not negative and untrusted_y is
         // not negative
 
-        // vm_window->x is greater than INT_MIN + MAX_WINDOW_WIDTH, so this is not UB
+        // vm_window->x is greater than INT32_MIN + MAX_WINDOW_WIDTH, so this is not UB
         x = min(untrusted_x, g->screen_window->image_width - vm_window->x);
         // now: x is not negative and x + vm_window->x is not negative
         // now: x + vm_window->x is not greater than g->screen_window->image_width
 
-        // vm_window->y is greater than INT_MIN + MAX_WINDOW_HEIGHT, so this is not UB
+        // vm_window->y is greater than INT32_MIN + MAX_WINDOW_HEIGHT, so this is not UB
         y = min(untrusted_y, g->screen_window->image_height - vm_window->y);
         // now: y is not negative and y + vm_window->y is not negative
         // now: y + vm_window->y is not greater than g->screen_window->image_height
@@ -2057,13 +2059,13 @@ static void do_shm_update(Ghandles * g, struct windowdata *vm_window,
         /* no image to update, will return after possibly drawing a frame */
         // width and height are not negative
         // (checked in handle_mfndump and handle_window_dump)
-        x = min(untrusted_x, (int)vm_window->width);
+        x = min(untrusted_x, vm_window_width);
         // now: x is not negative and not greater than vm_window->width
-        y = min(untrusted_y, (int)vm_window->height);
+        y = min(untrusted_y, vm_window_height);
         // now: y is not negative and not greater than vm_window->height
-        w = min(untrusted_w, (int)vm_window->width - x);
+        w = min(untrusted_w, vm_window_width - x);
         // now: w is not negative and not greater than vm_window->width
-        h = min(untrusted_h, (int)vm_window->height - y);
+        h = min(untrusted_h, vm_window_height - y);
         // now: h is not negative and not greater than vm_window->height
     }
 
@@ -2083,10 +2085,9 @@ static void do_shm_update(Ghandles * g, struct windowdata *vm_window,
     }
 
     int do_border = 0;
-    int delta, i;
     /* window contains only (forced) frame, so no content to update */
-    if ((int)vm_window->width <= border_width * 2
-        || (int)vm_window->height <= border_width * 2) {
+    if (vm_window_width <= border_width * 2
+        || vm_window_height <= border_width * 2) {
         XFillRectangle(g->display, vm_window->local_winid,
                    g->frame_gc, 0, 0,
                    vm_window->width,
@@ -2095,32 +2096,30 @@ static void do_shm_update(Ghandles * g, struct windowdata *vm_window,
     }
     assert(x >= 0 && y >= 0 && w >= 0 && h >= 0);
     assert(border_width >= 0);
-    const int right = x + w, bottom = y + h;
+    const int32_t right = x + w, bottom = y + h;
+    const int32_t max_right = vm_window_width - border_width;
+    const int32_t max_bottom = vm_window_height - border_width;
     /* force frame to be visible: */
     /*   * left */
-    delta = border_width - x;
-    if (delta > 0) {
-        w -= delta;
+    if (border_width > x) {
+        w -= border_width - x;
         x = border_width;
         do_border = 1;
     }
     /*   * right */
-    delta = right - (vm_window->width - border_width);
-    if (delta > 0) {
-        w -= delta;
+    if (right > max_right) {
+        w -= right - max_right;
         do_border = 1;
     }
     /*   * top */
-    delta = border_width - y;
-    if (delta > 0) {
-        h -= delta;
+    if (border_width > y) {
+        h -= border_width - y;
         y = border_width;
         do_border = 1;
     }
     /*   * bottom */
-    delta = bottom - (vm_window->height - border_width);
-    if (delta > 0) {
-        h -= delta;
+    if (bottom > max_bottom) {
+        h -= (bottom - max_bottom);
         do_border = 1;
     }
 
@@ -2160,7 +2159,7 @@ static void do_shm_update(Ghandles * g, struct windowdata *vm_window,
     if (!do_border)
         return;
     /* if border_width is 0 the loop body will not execute */
-    for (i = border_padding; i < border_padding + border_width; i++)
+    for (int32_t i = border_padding; i < border_padding + border_width; i++)
         XDrawRectangle(g->display, vm_window->local_winid,
                    g->frame_gc, i, i,
                    vm_window->width - 1 - 2 * i,
