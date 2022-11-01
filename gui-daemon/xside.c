@@ -2143,10 +2143,16 @@ static void do_shm_update(Ghandles * g, struct windowdata *vm_window,
             assert(0 && "Invalid trayicon_mode in do_shm_update");
     } else {
         if (vm_window->shmseg != QUBES_NO_SHM_SEGMENT) {
+            // No integer truncation is possible.  x and w are bounded between 0
+            // and vm_window->image_width, while y and h are bounded between 0
+            // and vm_window->image_height.  Therefore, all of them will fit in
+            // both an int16_t and a uint16_t.
             put_shm_image(g, vm_window->local_winid, vm_window, x, y, w, h, x, y);
         } else if (g->screen_window && g->screen_window->shmseg != QUBES_NO_SHM_SEGMENT) {
             // vm_window->x+x and vm_window->y+y are the position relative to
-            // the screen, while x and y are the position relative to the window
+            // the screen, while x and y are the position relative to the window.
+            // No integer truncation is possible, as the on-screen portion has
+            // dimensions that fit in an int16_t and a uint16_t.
             put_shm_image(g,
                           vm_window->local_winid,
                           g->screen_window,
