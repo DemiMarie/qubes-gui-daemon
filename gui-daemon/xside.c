@@ -259,6 +259,10 @@ static int x11_error_handler(Display * dpy, XErrorEvent * ev)
         fprintf(stderr, "  someone else already destroyed this window, ignoring\n");
         return 0;
     }
+    if (ev->request_code == X_SendEvent && ev->error_code == BadWindow) {
+        fprintf(stderr, "  likely window manager restart in progress, ignoring\n");
+        return 0;
+    }
     /* Permit XGetWindowAttributes errors, as long as they're not for root_win */
     if (ev->request_code == X_GetWindowAttributes &&
         ev->error_code == BadWindow &&
@@ -619,6 +623,7 @@ static void intern_global_atoms(Ghandles *const g) {
         { &g->net_wm_name, "_NET_WM_NAME" },
         { &g->net_wm_icon_name, "_NET_WM_ICON_NAME" },
         { &g->utf8_string, "UTF8_STRING" },
+        { &g->manager, "MANAGER" },
     };
     Atom labels[QUBES_ARRAY_SIZE(atoms_to_intern)];
     const char *names[QUBES_ARRAY_SIZE(atoms_to_intern)];
@@ -708,7 +713,7 @@ static void mkghandles(Ghandles * g)
                 &g->shm_major_opcode, &ev_base, &err_base))
         fprintf(stderr, "MIT-SHM X extension missing!\n");
     /* get the work area */
-    XSelectInput(g->display, g->root_win, PropertyChangeMask);
+    XSelectInput(g->display, g->root_win, PropertyChangeMask | StructureNotifyMask);
     update_work_area(g);
     /* create graphical contexts */
     get_frame_gc(g, g->cmdline_color ? g->cmdline_color : "red");
@@ -2641,6 +2646,41 @@ static void process_xevent_xembed(Ghandles * g, const XClientMessageEvent * ev)
 
 }
 
+static void dock_window(Ghandles * g, struct windowdata *vm_window, Window tray)
+{
+    long data[2];
+    XClientMessageEvent msg;
+
+    data[0] = 0; /* version */
+    data[1] = 1; /* flags: XEMBED_MAPPED */
+    XChangeProperty(g->display, vm_window->local_winid,
+            g->xembed_info, g->xembed_info, 32,
+            PropModeReplace, (unsigned char *) data,
+            2);
+
+    memset(&msg, 0, sizeof(msg));
+    msg.type = ClientMessage;
+    msg.window = tray;
+    msg.message_type = g->tray_opcode;
+    msg.format = 32;
+    msg.data.l[0] = CurrentTime;
+    msg.data.l[1] = SYSTEM_TRAY_REQUEST_DOCK;
+    msg.data.l[2] = vm_window->local_winid;
+    msg.display = g->display;
+    XSendEvent(msg.display, msg.window, False, NoEventMask,
+           (XEvent *) & msg);
+}
+
+static void dock_all_windows(Ghandles *g, Window tray)
+{
+    struct genlist *item = g->wid2windowdata->next;
+    for (; item != g->wid2windowdata; item = item->next) {
+        struct windowdata *c = item->data;
+        if (c->is_docked)
+            dock_window(g, c, tray);
+    }
+}
+
 /* get current time */
 static int64_t ebuf_current_time_ms()
 {
@@ -2781,6 +2821,26 @@ static void process_xevent_core(Ghandles * g, XEvent event_buffer)
                             &event_buffer);
             if (g->log_level > 1)
                 fprintf(stderr, "Received ping request from Window Manager\n");
+        } else if (event_buffer.xclient.message_type == g->manager &&
+                event_buffer.xclient.format == 32 &&
+                (Atom)event_buffer.xclient.data.l[1] == g->tray_selection) {
+            /*
+             * New dock is supposed to send the message after taking
+             * ownership of the selection (and ensuring the old one cleaned up
+             * stuff), no need to call XGetSelectionOwner again. See
+             * https://tronche.com/gui/x/icccm/sec-2.html#s-2.8
+             */
+            Window tray = event_buffer.xclient.data.l[2];
+            if (g->log_level > 1)
+                fprintf(stderr, "Received message about new dock manager: %#lx\n",
+                        tray);
+            if (tray != None) {
+                dock_all_windows(g, tray);
+            }
+        } else {
+            if (g->log_level > 1)
+                fprintf(stderr, "Unsupported client message: %#lx\n",
+                        event_buffer.xclient.message_type);
         }
         break;
     default:;
@@ -3530,27 +3590,7 @@ static void handle_dock(Ghandles * g, struct windowdata *vm_window)
     }
     tray = XGetSelectionOwner(g->display, g->tray_selection);
     if (tray != None) {
-        long data[2];
-        XClientMessageEvent msg;
-
-        data[0] = 0; /* version */
-        data[1] = 1; /* flags: XEMBED_MAPPED */
-        XChangeProperty(g->display, vm_window->local_winid,
-                g->xembed_info, g->xembed_info, 32,
-                PropModeReplace, (unsigned char *) data,
-                2);
-
-        memset(&msg, 0, sizeof(msg));
-        msg.type = ClientMessage;
-        msg.window = tray;
-        msg.message_type = g->tray_opcode;
-        msg.format = 32;
-        msg.data.l[0] = CurrentTime;
-        msg.data.l[1] = SYSTEM_TRAY_REQUEST_DOCK;
-        msg.data.l[2] = vm_window->local_winid;
-        msg.display = g->display;
-        XSendEvent(msg.display, msg.window, False, NoEventMask,
-               (XEvent *) & msg);
+        dock_window(g, vm_window, tray);
     }
     vm_window->is_docked = 1;
 }

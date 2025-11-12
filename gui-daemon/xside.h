@@ -192,6 +192,7 @@ struct _global_handles {
     Atom net_wm_name; /* Atom: _NET_WM_NAME */
     Atom net_wm_icon_name; /* Atom: _NET_WM_ICON_NAME */
     Atom utf8_string; /* Atom: UTF8_STRING */
+    Atom manager; /* Atom: MANAGER */
     int shm_major_opcode;   /* MIT-SHM extension opcode */
     /* shared memory handling */
     struct shm_args_hdr *shm_args;    /* shared memory with Xorg */
